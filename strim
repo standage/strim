@@ -24,78 +24,101 @@ Usage: strim [options] /path/to/trimmomatic.jar TRIMSTEP1 [TRIMSTEP2 ...]
 EOF
 }
 
+
+# Configuration defaults
 pairin1=""
 pairin2=""
 pairin=""
 phred33=NO
 numthreads=1
 logfile=""
-
-if [ "$#" -eq 0 ]; then
-    print_usage
-    exit 0
-fi
-
-while getopts "hl:r:i:3t:g:" key
-do
-    case $key in
-        h)
-            print_usage
-            exit 0
-        ;;
-        l)
-            pairin1=$OPTARG
-        ;;
-        r)
-            pairin2=$OPTARG
-        ;;
-        i)
-            pairin=$OPTARG
-        ;;
-        3)
-            phred33=YES
-        ;;
-        t)
-            numthreads=$OPTARG
-        ;;
-        g)
-            logfile=$OPTARG
-        ;;
-    esac
-done
-shift $((OPTIND-1))
-
-if [ "$#" -eq 0 ]; then
-    >&2 echo "Trimmomatic JAR file not specified!"
-    exit 1
-fi
-trimjar=$1
-shift
-
-if [ "$#" -eq 0 ]; then
-    >&2 echo "No trim steps specified!"
-    exit 1
-fi
+trimjar=""
+trimsteps=""
 
 
-tempdir=$(mktemp -dt "strim.XXXXXXXXXX")
+# Command-line interface
+parse_args()
+{
+    if [ "$#" -eq 0 ]; then
+        print_usage
+        exit 0
+    fi
 
-cmd="java -jar $trimjar PE -threads $numthreads"
-if [ "$phred33" = "YES" ]; then
-    cmd="$cmd -phred33"
-fi
-if [ -n "$logfile" ]; then
-    cmd="$cmd -trimlog $logfile"
-fi
-cmd="$cmd $pairin1 $pairin2 ${tempdir}/out1 /dev/null ${tempdir}/out2 /dev/null $@"
+    while getopts "hl:r:i:3t:g:" key
+    do
+        case $key in
+            h)
+                print_usage
+                exit 0
+            ;;
+            l)
+                pairin1=$OPTARG
+            ;;
+            r)
+                pairin2=$OPTARG
+            ;;
+            i)
+                pairin=$OPTARG
+            ;;
+            3)
+                phred33=YES
+            ;;
+            t)
+                numthreads=$OPTARG
+            ;;
+            g)
+                logfile=$OPTARG
+            ;;
+        esac
+    done
+    shift $((OPTIND-1))
 
-# >&2 echo $cmd
+    if [ "$#" -eq 0 ]; then
+        >&2 echo "Trimmomatic JAR file not specified!"
+        exit 1
+    fi
+    trimjar=$1
+    shift
 
-mkfifo ${tempdir}/out1
-mkfifo ${tempdir}/out2
-$cmd &
-paste <(paste - - - - < ${tempdir}/out1) <(paste - - - - < ${tempdir}/out2) | tr '\t' '\n'
-wait
+    if [ "$#" -eq 0 ]; then
+        >&2 echo "No trim steps specified!"
+        exit 1
+    fi
+    trimsteps="$@"
+}
 
-rm -r $tempdir
 
+# Main procedure
+main()
+{
+    parse_args $@
+
+    # Stream trimmomatic output through two named pipes
+    tempdir=$(mktemp -dt "strim.XXXXXXXXXX")
+    outfiles="${tempdir}/out1 /dev/null ${tempdir}/out2 /dev/null"
+    mkfifo ${tempdir}/out1
+    mkfifo ${tempdir}/out2
+
+    # Build the Trimmomatic command
+    cmd="java -jar $trimjar PE -threads $numthreads"
+    if [ "$phred33" = "YES" ]; then
+        cmd="$cmd -phred33"
+    fi
+    if [ -n "$logfile" ]; then
+        cmd="$cmd -trimlog $logfile"
+    fi
+    cmd="$cmd $pairin1 $pairin2 $outfiles $trimsteps"
+    # >&2 echo $cmd
+
+    # Execute Trimmomatic and interleave the paired output
+    $cmd &
+    paste <(paste - - - - < ${tempdir}/out1) \
+          <(paste - - - - < ${tempdir}/out2) \
+        | tr '\t' '\n'
+    wait
+
+    rm -r $tempdir
+}
+
+
+main $@
